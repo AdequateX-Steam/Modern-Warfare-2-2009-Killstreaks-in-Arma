@@ -79,8 +79,22 @@ if (hasInterface) then  //Run on all players + SP host
 						"AC130", 
 						"NUKE"
 						] select (missionNamespace getVariable (("EXP_Killstreak" + (str _x)) + "_slot"));
-						//give killstreak reward here! /////////////////////////////////////////////////////////////////////////
-						[_rewardType, _rewardThreshold, _forEachIndex ,_instigator] call EXP_fnc_killstreakHandler;
+						
+						
+						//check that there isnt an already existing same killstreak / removes duplicates
+						_copies = [];
+						_killStreak = ["Recon UAV", "Predator Missile", "Precision Airstrike", "Chopper Gunner", "AC-130J Ghost Rider", "Tactical Nuke"] select (missionNamespace getVariable (("EXP_Killstreak" + (str _x)) + "_slot"));   //config.cpp comm menu title names
+						{
+							if (_x select 1 find _killStreak != -1) then {
+								_copies pushback _foreachindex;
+								[player, _x select 0] call BIS_fnc_removeCommMenuItem;
+							};
+						}foreach (player getvariable "BIS_fnc_addCommMenuItem_menu");
+						
+						
+						
+						//give killstreak reward here! //
+						[_rewardType, _forEachIndex] call EXP_fnc_killstreakHandler;
 						
 					};	 
 				} foreach _numKillstreaks;
@@ -94,9 +108,7 @@ EXP_fnc_killstreakHandler =
 	params
 	[
 		["_rewardType", "", [""]],
-		["_rewardThreshold", 1, [0]],   //unused
-		["_rewardSlot", 1, [0]],
-		["_instigator", objNull, [objNull]] //unused
+		["_rewardSlot", 1, [0]]
 	];
 	
 // Play sounds and give killstreak support action
@@ -427,12 +439,12 @@ EXP_fnc_killstreakHandler =
 
 
 EXP_fnc_deployUav = {
-	//BUGS FOR UAV
-		// ENEMY POSITIONS DO NOT UPDATE FOR THE FRIENDLY TEAM
 	//suggestions:
 		//do oneachFrame, with split (tick-tock) updates for all (enemy units array /2)
 			//custom 2d markers 
 				//arrow pointer for better UAV killstreak (realtime update) ??
+	// BUGS:
+		//if multiple UAV killstreak are used at the same time the map marker only shows for the first one activated (change its name dynamically?)
 	openMap [false, false];  //prevent 2 streaks from being used at same time
 	
 	//Map Event Handlers
@@ -495,25 +507,24 @@ EXP_fnc_deployUav = {
 		
 		/// Drone initialize
 		_TargetPos set [2, 0];
-		_spawnpos = [((_TargetPos select 0) - 707), ((_TargetPos select 1) - 707), 800];
-		_uavDrone= createVehicle ["B_UAV_02_dynamicLoadout_F", _spawnpos , [], 0, "CAN_COLLIDE"];
+		_spawnpos = [((_TargetPos select 0) - _searchRadius), ((_TargetPos select 1) - _searchRadius), 600];
+		_uavDrone = createVehicle ["B_UAV_02_dynamicLoadout_F", _spawnpos , [], 0, "CAN_COLLIDE"];
 		(side player) createVehicleCrew _uavDrone;
 		_uavDrone engineOn true;
-		_uavDrone setVelocityModelSpace [0,66,0];
+		_uavDrone setVelocityModelSpace [0,80,0];
 		_waypoint = group(_uavDrone) addWaypoint [_TargetPos, -1, 1];
 		group(_uavDrone) setCurrentWaypoint _waypoint;
 		group(_uavDrone) setCombatMode "BLUE";
 		group(_uavDrone) setCombatBehaviour "COMBAT"; //CARELESS
 		_waypoint setWaypointBehaviour "COMBAT";
 		_waypoint setWaypointSpeed "NORMAL";  //LIMITED
-		_uavDrone forceSpeed 66;
+		_uavDrone forceSpeed 80;
 		_waypoint setWaypointType "LOITER";
 		_waypoint setWaypointForceBehaviour true;
 		_waypoint setWaypointLoiterRadius (_searchRadius * 1.1);
-		_waypoint setWaypointLoiterAltitude 800;
+		_waypoint setWaypointLoiterAltitude 600;
 		_waypoint setWaypointLoiterType "CIRCLE";
 		{[_uavDrone , [_x, "", true]] remoteExec ["setPylonLoadout", _uavDrone];} foreach [1,2];
-		//{_uavDrone setPylonLoadout [_x, "", true]} foreach [1,2];
 		removeAllMagazines _uavDrone;
 		{_uavDrone removeweapon _x} forEach (weapons _bomberPlane);
 		_uavDrone lockDriver true;
@@ -531,123 +542,136 @@ EXP_fnc_deployUav = {
 		_uavMarker setMarkerColor "#(0.7,1,0.75,1)";
 		
 		((finddisplay 46) setVariable ["UavOBJ", _uavDrone]);
-		((finddisplay 46) setVariable ["UavMarker", _uavMarker]);
-		
+		//((finddisplay 46) setVariable ["UavMarker", _uavMarker]);
+		_uavDrone setVariable ["UavMarker", _uavMarker, true];
 		
 		//EventHandlers here
 		_uavDrone addEventHandler ["Killed", {
 			params ["_unit", "_killer", "_instigator", "_useEffects"];
-			systemChat "UAV destroyed";
-			[_unit, ((finddisplay 46) getVariable "UavMarker"), true, ((finddisplay 46) getVariable "UavEntities")] call EXP_fnc_terminateUavStreak;
+			systemChat "UAV: UAV destroyed";
+			[_unit, true, ((finddisplay 46) getVariable "UavEntities")] call EXP_fnc_terminateUavStreak;
+			_unit removeEventHandler [_thisEvent, _thisEventHandler];
 		}];
 				
-		// Play announcer sound here
+		// Play announcer sound here && register/activate KS on other machines / server
 		["UAV", (side Player)] remoteExec ["EXP_fnc_announcerHandler"];
-		
-		//this should be a seperate function to remote exec on all friendly computers
-		[_uavDrone, _tickTime, _TimeToLive, _searchRadius, _TargetPos] spawn {
-			params [
-				["_uavDrone", objNull, [objNull]],
-				["_tickTime", 15, [0]],
-				["_TimeToLive", 120, [0]],
-				["_searchRadius", 750, [0]],
-				["_TargetPos", [], [[]]]
-			];
-			//variable declaration
-			_allEntities = [];
-			_entityTypes = ["Man", "CAR", "Wheeled_APC_F", "Tank"];
-			_friendlyPlayers = [];
-			_startTime = time;
-			_endTime = _timeToLive;
-			_allEntities = [];
-			_updateEntities = [];
-			_sortedEntities = [];
-			_friendlyPlayers = [];
-			
-			//Search loop
-			while {((alive _uavDrone) && (!(_endTime <= 0)))} do {
-			
-				{
-					if ((side player getFriend side _x) > 0.6) then {_friendlyPlayers pushBack _x;}; //might need to be >=
-				} forEach allPlayers;
-			
-			
-				_updateEntities = _TargetPos nearEntities [_entityTypes, _searchRadius];
-				if (((_updateEntities arrayIntersect _allEntities)) isNotEqualTo _updateEntities) then {
-					
-					_allEntities = _updateEntities;
-				
-				};
-				{
-					if (((side player getFriend side _x) < 0.6) && (alive _x)) then {
-						_marker = createMarkerLocal [(str _x), getPosATL _x];
-						_marker setMarkerTypeLocal "uav_Ping";
-						_marker setMarkerColorLocal "#(1,1,1,1)";
-						_marker setMarkerSizeLocal [0.45,0.45];
-						_sortedEntities append [[_x, _marker]];
-					};
-				} forEach _allEntities;	
-				
-				for "_i" from 0 to ((count _sortedEntities) - 1) step 1 do
-				{			
-					if ((((_sortedEntities select _i) select 0) in _allEntities) == False) then {
-						//delete from public variable here first? then local variable below
-						deleteMarkerLocal ((_sortedEntities select _i) select 1);
-						_sortedEntities deleteAt _i;
-					
-					}
-					else 
-					{
-						((_sortedEntities select _i) select 1) setMarkerPos (getPosATL ((_sortedEntities select _i) select 0));
-					};
-				};
-						
-				((finddisplay 46) setVariable ["UavEntities", _sortedEntities]);
-				sleep _tickTime;
-				_endTime = _timeToLive - (time - _startTime);
-				if ((round _endTime) % 10 == 0) then { systemChat ("UAV: " + (str (round _endTime)) + " Seconds remaining");};
-			};
-			if ((alive _uavDrone)) then {
-				systemChat "UAV timed-out";
-				[_uavDrone, ((finddisplay 46) getVariable "UavMarker"), false, ((finddisplay 46) getVariable "UavEntities")] call EXP_fnc_terminateUavStreak;
-			};
-		};
+		[_uavDrone, _tickTime, _TimeToLive, _searchRadius, _TargetPos] remoteExec ["EXP_fnc_uavClientUpdate", (side player)];
+		[_uavDrone, _tickTime, _TimeToLive] remoteExec ["EXP_fnc_uavServerRegistration", 2];
+	
 	};
 	
-	
-	EXP_fnc_uavRemoteUpdate = {
-	//run on and update other client machines with _sortedEntities;
-		//need to determine if multiple concurrent UAVs are running (use public variable and add to and deleteAT as necessary for all concurrent scripts, ^^^^^ above)
+	EXP_fnc_uavServerRegistration = {
+		//Register Killstreak with server (Self host or dedicated)
+		//Server will upon KS expiry delete the drone, thus terminating each client KS in the event the original KS client disconnects
 		params [
-			["_sortedEntities", objNull, [objNull]],
+			["_uavDrone", objNull, [objNull]],
 			["_tickTime", 15, [0]],
 			["_TimeToLive", 120, [0]]
 		];	
-				
-				
+		if (isServer) then {
+		
+			_uavDrone addEventHandler ["Killed", {
+				params ["_unit", "_killer", "_instigator", "_useEffects"];
+				[_unit, true, []] call EXP_fnc_terminateUavStreak;
+				_unit removeEventHandler [_thisEvent, _thisEventHandler];
+			}];
+		
+			_startTime = time;
+			_endTime = _timeToLive;
+	 
+			while {((alive _uavDrone) && (!(_endTime <= 0)))} do { 		
+				sleep _tickTime;
+				_endTime = _timeToLive - (time - _startTime);
+			};
+			sleep 2;
+			if (alive _uavDrone) then {
+				[_uavDrone, false, []] call EXP_fnc_terminateUavStreak;
+			};
+	 
+		};
+	
 	};
 	
+	EXP_fnc_uavClientUpdate = {
+	//run on and update other friendly client machines;
+		params [
+			["_uavDrone", objNull, [objNull]],
+			["_tickTime", 15, [0]],
+			["_TimeToLive", 120, [0]],
+			["_searchRadius", 750, [0]],
+			["_TargetPos", [], [[]]]
+		];	
+
+	//variable declaration
+		_allEntities = [];
+		_entityTypes = ["Man", "CAR", "Wheeled_APC_F", "Tank"];
+		_startTime = time;
+		_endTime = _timeToLive;
+		_allEntities = [];
+		_updateEntities = [];
+		_sortedEntities = [];  //format [enemey object, marker name]
+		
+		//Search loop
+		while {((alive _uavDrone) && (!(_endTime <= 0)))} do {
+		
+			_updateEntities = _TargetPos nearEntities [_entityTypes, _searchRadius];
+			_allEntities = _updateEntities select {((alive _x) && ((side player getFriend side _x) < 0.6))};
+			
+			for "_i" from 0 to ((count _allEntities) - 1) step 1 do { 
+				if (!([(_allEntities select _i), (str (_allEntities select _i))] in _sortedEntities)) then {
+			
+					_marker = createMarkerLocal [(str (_allEntities select _i)), getPosATL (_allEntities select _i)];
+					_marker setMarkerTypeLocal "uav_Ping";
+					_marker setMarkerColorLocal "#(1,1,1,1)";
+					_marker setMarkerSizeLocal [0.7,0.7];
+					_sortedEntities append [[(_allEntities select _i), _marker]];
+				};			
+			};
+			_deadEntityIndexes = [];
+			{
+				if (alive (_x select 0)) then {
+					((_sortedEntities select _forEachIndex) select 1) setMarkerPosLocal (getPosATL ((_sortedEntities select _forEachIndex) select 0));
+				}
+				else {
+					deleteMarkerLocal ((_sortedEntities select _forEachIndex) select 1);
+					_deadEntityIndexes pushBack _forEachIndex;
+				};
+			} forEach _sortedEntities;
+			_sortedEntities deleteAt _deadEntityIndexes;
+				
+			((finddisplay 46) setVariable ["UavEntities", _sortedEntities]);
+			sleep _tickTime;
+			_endTime = _timeToLive - (time - _startTime);
+			if ((round _endTime) % 10 == 0) then { systemChat ("UAV: " + (str (round _endTime)) + " Seconds remaining");};
+		};
+		if ((alive _uavDrone)) then {
+			systemChat "UAV: timed-out";
+			[_uavDrone, false, ((finddisplay 46) getVariable "UavEntities")] call EXP_fnc_terminateUavStreak;
+		};					
+	};
 	
-	/* 	
-	addMissionEventHandler ["EachFrame", {
-		// no params
-		}]; 
-	*/
 	EXP_fnc_terminateUavStreak = {
 		params [
 			["_uavDrone", objNull, [objNull]],
-			["_uavMarker", "", [""]],
 			["_shotDown", false, [false]],
 			["_entitiesArray", [], [[]]]
 		];
-		if (_shotdown isEqualTo false) then {
-			deleteVehicleCrew _uavDrone;
-			deleteVehicle _uavDrone;
+		if (_uavDrone isNotEqualTo objNull) then {
+			if ((_shotdown isEqualTo false)) then {
+				deleteVehicleCrew _uavDrone;
+				deleteVehicle _uavDrone;
+			};
+			if (!(_uavDrone isNil "UavMarker")) then {
+				deleteMarker (_uavDrone getVariable "UavMarker");
+				_uavDrone setVariable ["UavMarker", nil, true];
+			};
 		};
-		deleteMarker _uavMarker;
-		{
-			(deleteMarkerLocal (_x select 1));
-		}forEach _entitiesArray
+		if ((count _entitiesArray != 0)) then {
+			{
+				(deleteMarkerLocal (_x select 1));
+			}forEach _entitiesArray
+		};
+
 	};
 };
 
@@ -656,7 +680,6 @@ EXP_fnc_deployPredatorMissile = {
 	//TODO:
 
 	//BUGS:
-		// Drone should have a 5 second period before being targetted by AI
 		
 	if ((player getvariable "EXP_killstreakIsActive") == 1) exitWith { systemChat "Another killstreak is currently in use";};
 	
@@ -808,14 +831,14 @@ EXP_fnc_deployPredatorMissile = {
 				while {((alive _predatorDrone) && (_timeToLive > 0))} do {
 					sleep 1;
 					_timeToLive = (_timeToLiveStatic - (time - _startTime));
-					if (((round _timeToLive) % 10) == 0) then {systemChat format ["Drone killstreak time remaining: %1 seconds", round _timeToLive];};
+					if (((round _timeToLive) % 10) == 0) then {systemChat format ["Predator Missile: time remaining - %1 seconds", round _timeToLive];};
 					systemChat str (player getvariable "EXP_usedKillstreakSlot");
 				};	
 				if (!(alive _predatorDrone)) then {
 					[(finddisplay 46) getVariable "PredatorDroneOBJ", true] call EXP_fnc_terminatePredatorStreak;
 				}
 				else {
-					systemchat "Killstreak time expired";
+					systemchat "Predator Missile: Killstreak expired";
 					[(finddisplay 46) getVariable "PredatorDroneOBJ", false] call EXP_fnc_terminatePredatorStreak;
 				};
 					
@@ -837,7 +860,7 @@ EXP_fnc_deployPredatorMissile = {
 						&& 
 						(_newCameraOn isNotEqualTo ((findDisplay 46) getVariable "CameraOBJ"))
 					) 
-					then {[((finddisplay 46) getVariable "PredatorDroneOBJ"), false] call EXP_fnc_terminatePredatorStreak; systemChat "Killstreak terminated"};	 
+					then {[((finddisplay 46) getVariable "PredatorDroneOBJ"), false] call EXP_fnc_terminatePredatorStreak; systemChat "Predator Missile: Killstreak terminated"};	 
 				}
 				else {
 					//missile in flight, force switch camera to missile camera here.
@@ -861,6 +884,7 @@ EXP_fnc_deployPredatorMissile = {
 			params ["_unit", "_killer", "_instigator", "_useEffects"];
 			removeMissionEventHandler ["PlayerViewChanged" ,((findDisplay 46) getVariable "killStreakLockEH")]; //prevents double firing of EXP_fnc_terminatePredatorStreak from the killstreakLOCK EH above^^^
 			[_unit, true] call EXP_fnc_terminatePredatorStreak;
+			systemchat "Predator Missile: Drone destroyed";
 			_unit removeEventHandler [_thisEvent, _thisEventHandler];
 		}];
 		(findDisplay 46) setVariable ["droneKilledEH", _droneKilled];
@@ -956,7 +980,6 @@ EXP_fnc_deployPredatorMissile = {
 				
 				_ppUpdate = addMissionEventHandler ["EachFrame", {
 					if (alive (_thisArgs select 0) &&  ((_thisArgs select 1) isEqualType 0)) then {
-						//systemChat str [alive (_thisArgs select 0), (((_thisArgs select 1) isEqualType 0))];
 						
 						_Zpos = (getPosATL (_thisArgs select 0) select 2);
 						if (_Zpos <= 1) then {_Zpos = 1};
@@ -1052,7 +1075,10 @@ EXP_fnc_deployPredatorMissile = {
 					((findDisplay 46) setVariable ["MouseButtonDownEH", nil]);
 					//if (!((findDisplay 46) isNil "CameraLockEH")) then {removeMissionEventHandler ["PlayerViewChanged", ((findDisplay 46) getVariable "CameraLockEH")];};
 					((findDisplay 46) setVariable ["ProjectileEH", nil]);	
-					if ((_predatorDrone magazineTurretAmmo ["magazine_Missiles_Predator_x2", [0]]) == 0) then {[_predatorDrone, false] call EXP_fnc_terminatePredatorStreak;};
+					if ((_predatorDrone magazineTurretAmmo ["magazine_Missiles_Predator_x2", [0]]) == 0) then {
+						systemChat "Predator Missile: Out of Missiles"; 
+						[_predatorDrone, false] call EXP_fnc_terminatePredatorStreak;
+					};
 					_projectile removeEventHandler ["Deleted", _thisEventHandler];
 				}]; 
 				(findDisplay 46) setVariable ["ProjectileEH", _projectileEH];
@@ -1735,12 +1761,6 @@ Debug for NUKE:
 
 
 ////////////////////////////   END OF KILLSTREAK SPAWNERS //////////////////////////////////
-
-
-EXP_fnc_unitPlayPlanes = {
-
-
-};
 
 
 EXP_fnc_announcerHandler = {
